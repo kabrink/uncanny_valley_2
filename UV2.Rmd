@@ -1,0 +1,695 @@
+---
+title: "Uncanny Valley 2"
+output:
+  html_document:
+    df_print: paged
+---
+
+"Uncanny Valley 2" is a study that examines children's beliefs and feelings about a collection of real-world robots based on a viewing of an 8-second video of that robot. 
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.path='Figures/PS/', dev=c('svg','postscript'), fig.width = 8, fig.height = 8, echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r libraries}
+library(lubridate)
+library(pander)
+library(ggplot2)
+library(reshape2)
+library(wesanderson)
+options("scipen"=100, "digits"= 4)
+```
+
+```{r settings}
+wesanderson = "Moonrise3"
+```
+
+```{r standard_error}
+std.error <- function(x) sd(x,na.rm=TRUE)/sqrt(length(x))
+```
+
+```{r import}
+source("~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/UV2_data.R")
+```
+
+```{r format}
+#convert missing values to NA
+UV2[ UV2 == "" ] = NA
+UV2[ UV2 == -99 ] = NA
+
+#remove columns with only NAs
+UV2 <- UV2[,colSums(is.na(UV2))<nrow(UV2)]
+
+#remove columns that start with Q (non-questions in Qualtrics survey)
+UV2 = UV2[,!grepl("Q",names(UV2))]
+UV2 = UV2[,!grepl("INS",names(UV2))]
+UV2 = UV2[,!grepl("R1n.act",names(UV2))]
+
+#remove specific columns
+UV2 = subset(UV2, select=-c(ResponseSet,Name,IPAddress,Debrief))
+```
+
+```{r preprocessing}
+UV2 = UV2[!is.na(UV2$SubID),]
+UV2 = UV2[!grepl("test",UV2$SubID,ignore.case = T),]
+UV2 = UV2[!grepl("demo",UV2$SubID,ignore.case = T),]
+
+UV2$DOB = mdy(UV2$DOB)
+
+UV2$duration = minute(as.period(interval(UV2$StartDate, UV2$EndDate)))
+
+UV2$Age = year(as.period(interval(UV2$DOB, UV2$EndDate))) + 
+  month(as.period(interval(UV2$DOB, UV2$EndDate)))/12 + 
+  day(as.period(interval(UV2$DOB, UV2$EndDate)))/365
+```
+
+```{r}
+#exclude comments that say developmental disorder or demo or whatever
+demo = UV2$Comments[which(grepl("demo",UV2$Comments))]
+disorder = UV2$Comments[which(grepl("disorder|dysfunction|disfunction",UV2$Comments))]
+distract = UV2$Comments[which(grepl("distract",UV2$Comments))]
+
+UV2 = UV2[which(!grepl("demo",UV2$Comments)),]
+UV2 = UV2[which(!grepl("disorder|dysfunction|disfunction",UV2$Comments)),]
+UV2 = UV2[which(!grepl("distract",UV2$Comments)),]
+```
+
+```{r RAs, eval=FALSE}
+#for giving to RAs for posters
+UV2 = subset(UV2, select=-c(ResponseID,Status,StartDate,EndDate,Finished,Audio.Name,Audio,R2))
+UV2 = UV2[,!grepl("X",names(UV2))]
+write.csv(UV2,"~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/UV2.csv")
+```
+
+```{r clean}
+#check comments
+#finish variable
+
+UV2$Sex = factor(UV2$Sex)
+```
+
+```{r summary}
+table(UV2$Sex)
+```
+
+```{r, age_groups_gender}
+UV2 = UV2 %>%
+  mutate(AgeGroup = case_when(
+    Age >= 12 ~ ">12",
+    Age >= 9 ~ "9-12",
+    Age >= 6 ~ "6-9",
+    Age >= 3 ~ "3-6")) %>%
+  filter(Age > 3)
+
+UV2$AgeGroup = factor(UV2$AgeGroup, levels = c('3-6','6-9','9-12','>12') )
+x = table(UV2$AgeGroup,UV2$Sex)
+addmargins(x)
+```
+
+```{r R1}
+R1 = UV2[,grepl("R1|SubID",names(UV2))]
+
+R1.long = melt(R1,id.vars=c("SubID"),variable.name="robot")
+R1.long = R1.long[!is.na(R1.long$value),]
+ggplot(R1.long, aes(x = robot,fill = value)) + 
+    geom_bar(position = "fill")
+```
+
+```{r imputed_data}
+UV2.imp = UV2 %>%
+  select(starts_with('UV1'),
+         starts_with('UV2'),
+         starts_with('A1'),
+         starts_with('A2'),
+         starts_with('A3'),
+         starts_with('E1'),
+         starts_with('E2'),
+         starts_with('E3'),
+         starts_with('E4'))
+```
+
+```{r impute_mice}
+imputed_Data <- mice(UV2.imp, m=5, maxit = 50, method = 'polr', seed = 500)
+```
+
+
+```{r impute_missForest}
+library(missForest)
+
+UV2.full <- missForest(UV2.imp)
+
+#check imputed values
+UV2.imp = UV2.full$ximp
+
+#check imputation error
+UV2.full$OOBerror
+
+```
+
+
+```{r}
+
+UV2.imp$SubID = UV2$SubID
+UV2.imp$Age = UV2$Age
+UV1 = UV2.imp[,grepl("UV1|SubID|Age",names(UV2.imp))]
+UV1$AgeGroup = ifelse(UV1$Age>9,"old","young")
+
+UV1.long = melt(UV1,id.vars=c("SubID","AgeGroup","Age"),variable.name="robot")
+UV1.long = UV1.long[!is.na(UV1.long$value),]
+ggplot(UV1.long, aes(x = robot,y = value, color=AgeGroup)) + 
+    geom_point(position="jitter")
+
+UV1.long$value = as.numeric(UV1.long$value)
+
+ggplot(UV1.long, aes(fill=AgeGroup, y=value, x=robot)) + 
+    geom_bar(position="dodge", stat = "summary", fun.y = "mean")
+```
+
+```{r unfolding_analysis} 
+#ALSCAL with levels=interval.
+
+act = UV2 %>%
+  select(ends_with('.act')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.act', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+act$robot = 'actroid'
+
+sof = UV2 %>%
+  select(ends_with('.sof')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.sof', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+sof$robot = 'sofia'
+
+pep = UV2 %>%
+  select(ends_with('.pep')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.pep', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+pep$robot = 'pepper'
+
+tap = UV2 %>%
+  select(ends_with('.tap')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.tap', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+tap$robot = 'tapia'
+
+spot = UV2 %>%
+  select(ends_with('.spot')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.spot', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+spot$robot = 'spot'
+
+fes = UV2 %>%
+  select(ends_with('.fes')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.fes', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+fes$robot = 'festo'
+
+atlas = UV2 %>%
+  select(ends_with('.atlas')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.atlas', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+atlas$robot = 'atlas'
+
+kb = UV2 %>%
+  select(ends_with('.kb')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.kb', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+kb$robot = 'kaspar_back'
+
+kf = UV2 %>%
+  select(ends_with('.kf')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.kf', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+kf$robot = 'kaspar_front'
+
+nao = UV2 %>%
+  select(ends_with('.nao')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.nao', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+nao$robot = 'nao'
+
+stan = UV2 %>%
+  select(ends_with('.stan')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.stan', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+stan$robot = 'stan'
+
+ua.full = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
+ua = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
+
+ua$count = NULL
+ua.t = data.frame(t(ua))
+names(ua.t) = ua$robot 
+ua.t=ua.t[-nrow(ua.t),]
+
+ua = ua.t %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(round(.,2)))*100
+
+library(smacof)
+res <- unfolding(ua, type='interval')
+{plot(res, type = "p", pch = 25, col.columns = 3, ylim=c(-1,1),
+xlim=c(-1,1),
+label.conf.columns = list(label = TRUE, pos = 3, col = 3),
+col.rows = 8, label.conf.rows = list(label = TRUE, pos = 3, col = 8))
+abline(h=0,v=0)}
+
+```
+
+```{r unfolding_analysis_young}
+act = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.act')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.act', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+act$robot = 'actroid'
+
+sof = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.sof')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.sof', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+sof$robot = 'sofia'
+
+pep = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.pep')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.pep', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+pep$robot = 'pepper'
+
+tap = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.tap')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.tap', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+tap$robot = 'tapia'
+
+spot = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.spot')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.spot', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+spot$robot = 'spot'
+
+fes = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.fes')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.fes', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+fes$robot = 'festo'
+
+atlas = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.atlas')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.atlas', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+atlas$robot = 'atlas'
+
+kb = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.kb')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.kb', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+kb$robot = 'kaspar_back'
+
+kf = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.kf')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.kf', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+kf$robot = 'kaspar_front'
+
+nao = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.nao')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.nao', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+nao$robot = 'nao'
+
+stan = UV2 %>%
+  filter(Age<=9) %>%
+  select(ends_with('.stan')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.stan', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+stan$robot = 'stan'
+
+ua.full = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
+ua = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
+
+ua$count = NULL
+ua.t = data.frame(t(ua))
+names(ua.t) = ua$robot 
+ua.t=ua.t[-nrow(ua.t),]
+
+ua = ua.t %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(round(.,2)))*100
+
+library(smacof)
+res <- unfolding(ua, type='interval')
+{plot(res, type = "p", pch = 25, col.columns = 3, ylim=c(-1,1),
+xlim=c(-1,1),
+label.conf.columns = list(label = TRUE, pos = 3, col = 3),
+col.rows = 8, label.conf.rows = list(label = TRUE, pos = 3, col = 8))
+abline(h=0,v=0)}
+
+```
+```{r unfolding_analysis_old}
+act = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.act')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.act', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+act$robot = 'actroid'
+
+sof = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.sof')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.sof', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+sof$robot = 'sofia'
+
+pep = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.pep')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.pep', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+pep$robot = 'pepper'
+
+tap = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.tap')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.tap', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+tap$robot = 'tapia'
+
+spot = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.spot')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.spot', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+spot$robot = 'spot'
+
+fes = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.fes')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.fes', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+fes$robot = 'festo'
+
+atlas = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.atlas')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.atlas', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+atlas$robot = 'atlas'
+
+kb = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.kb')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.kb', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+kb$robot = 'kaspar_back'
+
+kf = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.kf')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.kf', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+kf$robot = 'kaspar_front'
+
+nao = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.nao')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.nao', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+nao$robot = 'nao'
+
+stan = UV2 %>%
+  filter(Age>9) %>%
+  select(ends_with('.stan')) %>%
+  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
+  rename_all(funs(stringr::str_replace_all(., '.stan', ''))) %>%
+  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
+  mutate(count = n()) %>%
+  summarize_all(mean,na.rm=T)
+  
+stan$robot = 'stan'
+
+ua.full = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
+ua = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
+ua$count = NULL
+ua.t = data.frame(t(ua))
+names(ua.t) = ua$robot 
+ua.t=ua.t[-nrow(ua.t),]
+
+ua = ua.t %>%
+  mutate_all(as.character) %>%
+  mutate_all(as.numeric) %>%
+  mutate_all(funs(round(.,2)))*100
+
+library(smacof)
+res <- unfolding(ua, type='interval')
+{plot(res, type = "p", pch = 25, col.columns = 3, ylim=c(-1,1),
+xlim=c(-1,1),
+label.conf.columns = list(label = TRUE, pos = 3, col = 3),
+col.rows = 8, label.conf.rows = list(label = TRUE, pos = 3, col = 8))
+abline(h=0,v=0)}
+
+```
+
+```{r more clustering analyses}
+#dendrograms
+#clustering
+```
+
