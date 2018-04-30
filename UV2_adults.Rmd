@@ -5,7 +5,7 @@ output:
     df_print: paged
 ---
 
-"Uncanny Valley 2" is a study that examines children's beliefs and feelings about a collection of real-world robots based on a viewing of an 8-second video of that robot. 
+"Uncanny Valley 2" is a study that examines adults' beliefs and feelings about a collection of real-world robots based on a viewing of an 8-second video of that robot. 
 
 ```{r global_options, include=FALSE}
 knitr::opts_chunk$set(fig.path='Figures/PS/', dev=c('svg','postscript'), fig.width = 8, fig.height = 8, echo=FALSE, warning=FALSE, message=FALSE)
@@ -30,81 +30,55 @@ std.error <- function(x) sd(x,na.rm=TRUE)/sqrt(length(x))
 ```
 
 ```{r import}
-source("~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/UV2_data.R")
+source("~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/UV2_adults.R")
+
+mturk = read.csv("~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/Batch_3212070_batch_results.csv")
+
+
 ```
 
 ```{r format}
-#convert missing values to NA
 UV2[ UV2 == "" ] = NA
 UV2[ UV2 == -99 ] = NA
-
-#remove columns with only NAs
-UV2 <- UV2[,colSums(is.na(UV2))<nrow(UV2)]
+UV2 = UV2[which(!is.na(UV2$IPAddress)),]
 
 #remove columns that start with Q (non-questions in Qualtrics survey)
 UV2 = UV2[,!grepl("Q",names(UV2))]
-UV2 = UV2[,!grepl("INS",names(UV2))]
-UV2 = UV2[,!grepl("R1n.act",names(UV2))]
+UV2 = UV2[,!grepl("X",names(UV2))]
 
-#remove specific columns
-UV2 = subset(UV2, select=-c(ResponseSet,Name,IPAddress,Debrief))
+#remove columns with only NAs
+UV2 <- UV2[,colSums(is.na(UV2))<nrow(UV2)]
 ```
 
 ```{r preprocessing}
-UV2 = UV2[!is.na(UV2$SubID),]
-UV2 = UV2[!grepl("test",UV2$SubID,ignore.case = T),]
-UV2 = UV2[!grepl("demo",UV2$SubID,ignore.case = T),]
-
 UV2$DOB = mdy(UV2$DOB)
 
-UV2$duration = minute(as.period(interval(UV2$StartDate, UV2$EndDate)))
+UV2$duration = minute(as.period(interval(UV2$StartDate, UV2$EndDate))) + second(as.period(interval(UV2$StartDate, UV2$EndDate)))/60
 
 UV2$Age = year(as.period(interval(UV2$DOB, UV2$EndDate))) + 
   month(as.period(interval(UV2$DOB, UV2$EndDate)))/12 + 
   day(as.period(interval(UV2$DOB, UV2$EndDate)))/365
-```
 
-```{r}
-#exclude comments that say developmental disorder or demo or whatever
-demo = UV2$Comments[which(grepl("demo",UV2$Comments))]
-disorder = UV2$Comments[which(grepl("disorder|dysfunction|disfunction",UV2$Comments))]
-distract = UV2$Comments[which(grepl("distract",UV2$Comments))]
+UV2 = UV2[which(UV2$Age>18&UV2$Age<100),]
+summary(UV2$Age)
 
-UV2 = UV2[which(!grepl("demo",UV2$Comments)),]
-UV2 = UV2[which(!grepl("disorder|dysfunction|disfunction",UV2$Comments)),]
-UV2 = UV2[which(!grepl("distract",UV2$Comments)),]
+UV2 = UV2[which(UV2$duration>2&UV2$duration<15),]
+summary(UV2$duration)
 ```
 
 ```{r RAs, eval=FALSE}
 #for giving to RAs for posters
-UV2 = subset(UV2, select=-c(ResponseID,Status,StartDate,EndDate,Finished,Audio.Name,Audio,R2))
-UV2 = UV2[,!grepl("X",names(UV2))]
-write.csv(UV2,"~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/UV2.csv")
+UV2 = subset(UV2, select=-c(ResponseID,Status,StartDate,EndDate))
+write.csv(UV2,"~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/UV2_adults.csv")
 ```
 
 ```{r clean}
-#check comments
-#finish variable
-
-UV2$Sex = factor(UV2$Sex)
+UV2$Gender = factor(UV2$Gender)
 ```
 
 ```{r summary}
-table(UV2$Sex)
-```
-
-```{r age_groups_gender}
-UV2 = UV2 %>%
-  mutate(AgeGroup = case_when(
-    Age >= 12 ~ ">12",
-    Age >= 9 ~ "9-12",
-    Age >= 6 ~ "6-9",
-    Age >= 3 ~ "3-6")) %>%
-  filter(Age > 3)
-
-UV2$AgeGroup = factor(UV2$AgeGroup, levels = c('3-6','6-9','9-12','>12') )
-x = table(UV2$AgeGroup,UV2$Sex)
-addmargins(x)
+table(UV2$Gender)
+table(UV2$Educ)
 ```
 
 ```{r R1}
