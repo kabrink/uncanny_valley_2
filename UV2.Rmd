@@ -8,16 +8,24 @@ output:
 "Uncanny Valley 2" is a study that examines children's beliefs and feelings about a collection of real-world robots based on a viewing of an 8-second video of that robot. 
 
 ```{r global_options, include=FALSE}
-knitr::opts_chunk$set(fig.path='Figures/PS/', dev=c('svg','postscript'), fig.width = 8, fig.height = 8, echo=FALSE, warning=FALSE, message=FALSE)
+knitr::opts_chunk$set(fig.path='Figures/Children/', fig.width = 7, fig.height = 4.5, echo=FALSE, warning=FALSE, message=FALSE)
 ```
 
 ```{r libraries}
 library(lubridate)
 library(pander)
+library(missForest)
 library(ggplot2)
-library(reshape2)
+library(lm.beta)
+library(lavaan)
 library(wesanderson)
+library(poLCA)
+library(ggbiplot)
+library(smacof)
+library(qgraph)
 library(dplyr)
+library(tidyr)
+
 options("scipen"=100, "digits"= 4)
 ```
 
@@ -33,664 +41,1241 @@ std.error <- function(x) sd(x,na.rm=TRUE)/sqrt(length(x))
 source("~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/UV2_data.R")
 ```
 
-```{r format}
+```{r formatting}
+UV2 = UV2 %>%
+  rename(Person = X0,
+         Actroid = X1,
+         Sofia = X2,
+         Pepper = X3,
+         Tapia = X4,
+         Spot = X5,
+         Festo = X6,
+         Atlas = X7,
+         KB = X8,
+         KF = X9,
+         Nao = X10)
+
+UV2$Person = recode(UV2$Person, `0` = "Person")
+UV2$Actroid = recode(UV2$Actroid, `1` = "Actroid")
+UV2$Sofia = recode(UV2$Sofia, `2` = "Sofia")
+UV2$Pepper = recode(UV2$Pepper, `3` = "Pepper")
+UV2$Tapia = recode(UV2$Tapia, `4` = "Tapia")
+UV2$Spot = recode(UV2$Spot, `5` = "Spot")
+UV2$Festo = recode(UV2$Spot, `6` = "Festo")
+UV2$Atlas = recode(UV2$Atlas, `7` = "Atlas")
+UV2$KB = recode(UV2$KB, `8` = "KB")
+UV2$KF = recode(UV2$KF, `9` = "KF")
+UV2$Nao = recode(UV2$Nao, `10` = "Nao")
+```
+
+```{r preprocessing}
 #convert missing values to NA
 UV2[ UV2 == "" ] = NA
 UV2[ UV2 == -99 ] = NA
 
+#remove columns that start with Q (non-questions in Qualtrics survey)
+UV2 = UV2 %>%
+  select(-starts_with("Q"),
+         -starts_with("X"),
+         -starts_with("INS"),
+         -starts_with("R1n.act")) %>%
+  mutate(Sex = factor(Sex),
+         DOB = mdy(DOB),
+         duration = minute(as.period(interval(StartDate, EndDate))),
+         Age = year(as.period(interval(DOB, EndDate))) + 
+           month(as.period(interval(DOB, EndDate)))/12 + 
+           day(as.period(interval(DOB, EndDate)))/365) %>%
+  filter(!grepl("test",SubID,ignore.case=T),
+         !grepl("demo",SubID,ignore.case=T),
+         !is.na(SubID),
+         Age >= 3) %>%
+  select(-SubID)
+
 #remove columns with only NAs
 UV2 <- UV2[,colSums(is.na(UV2))<nrow(UV2)]
-
-#remove columns that start with Q (non-questions in Qualtrics survey)
-UV2 = UV2[,!grepl("Q",names(UV2))]
-UV2 = UV2[,!grepl("INS",names(UV2))]
-UV2 = UV2[,!grepl("R1n.act",names(UV2))]
-
-#remove specific columns
-UV2 = subset(UV2, select=-c(ResponseSet,Name,IPAddress,Debrief))
-```
-
-```{r preprocessing}
-UV2 = UV2[!is.na(UV2$SubID),]
-UV2 = UV2[!grepl("test",UV2$SubID,ignore.case = T),]
-UV2 = UV2[!grepl("demo",UV2$SubID,ignore.case = T),]
-
-UV2$DOB = mdy(UV2$DOB)
-
-UV2$duration = minute(as.period(interval(UV2$StartDate, UV2$EndDate)))
-
-UV2$Age = year(as.period(interval(UV2$DOB, UV2$EndDate))) + 
-  month(as.period(interval(UV2$DOB, UV2$EndDate)))/12 + 
-  day(as.period(interval(UV2$DOB, UV2$EndDate)))/365
-```
-
-```{r}
-#exclude comments that say developmental disorder or demo or whatever
-demo = UV2$Comments[which(grepl("demo",UV2$Comments))]
-disorder = UV2$Comments[which(grepl("disorder|dysfunction|disfunction",UV2$Comments))]
-distract = UV2$Comments[which(grepl("distract",UV2$Comments))]
-
-UV2 = UV2[which(!grepl("demo",UV2$Comments)),]
-UV2 = UV2[which(!grepl("disorder|dysfunction|disfunction",UV2$Comments)),]
-UV2 = UV2[which(!grepl("distract",UV2$Comments)),]
-```
-
-```{r RAs, eval=FALSE}
-#for giving to RAs for posters
-UV2 = subset(UV2, select=-c(ResponseID,Status,StartDate,EndDate,Finished,Audio.Name,Audio,R2))
-UV2 = UV2[,!grepl("X",names(UV2))]
-write.csv(UV2,"~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/UV2.csv")
-```
-
-```{r clean}
-#check comments
-#finish variable
-
-UV2$Sex = factor(UV2$Sex)
 ```
 
 ```{r summary}
-table(UV2$Sex)
+pander(table(UV2$Sex))
+
+min(as.Date(UV2$StartDate))
+max(as.Date(UV2$StartDate))
+
+summary(UV2$duration)
 ```
 
-```{r age_groups_gender}
+```{r age_groups_Sex}
 UV2 = UV2 %>%
   mutate(AgeGroup = case_when(
     Age >= 12 ~ ">12",
     Age >= 9 ~ "9-12",
     Age >= 6 ~ "6-9",
     Age >= 3 ~ "3-6")) %>%
-  filter(Age > 3)
+  mutate(AgeGroup = factor(AgeGroup, levels = c('3-6','6-9','9-12','>12')))
+  
+dim(UV2)[1]
 
-UV2$AgeGroup = factor(UV2$AgeGroup, levels = c('3-6','6-9','9-12','>12') )
-x = table(UV2$AgeGroup,UV2$Sex)
-addmargins(x)
+pander(addmargins(table(UV2$AgeGroup,UV2$Sex)))
+
+pander(summary(UV2$Age))
 ```
 
-```{r R1}
-R1 = UV2[,grepl("R1|SubID",names(UV2))]
+```{r exclusion}
+dim(UV2)[1]
 
-R1.long = melt(R1,id.vars=c("SubID"),variable.name="robot")
-R1.long = R1.long[!is.na(R1.long$value),]
-ggplot(R1.long, aes(x = robot,fill = value)) + 
-    geom_bar(position = "fill")
+#exclude comments that say developmental disorder or distracted
+UV2 = UV2 %>% 
+  filter(!grepl("disorder|dysfunction|disfunction",Comments)) 
+
+dim(UV2)[1]
+
+UV2 = UV2 %>% 
+  filter(!grepl("distract",Comments))
+
+dim(UV2)[1]
 ```
 
-```{r imputed_data}
-UV2.imp = UV2 %>%
-  select(starts_with('UV1'),
-         starts_with('UV2'),
-         starts_with('A1'),
-         starts_with('A2'),
-         starts_with('A3'),
-         starts_with('E1'),
-         starts_with('E2'),
-         starts_with('E3'),
-         starts_with('E4'))
-```
-
-```{r impute_mice}
-imputed_Data <- mice(UV2.imp, m=5, maxit = 50, method = 'polr', seed = 500)
+```{r RAs, eval=FALSE}
+#for giving to RAs for posters
+#UV2 = subset(UV2, select=-c(ResponseID,Status,StartDate,EndDate,Finished,Audio.Name,Audio,R2))
+#UV2 = UV2[,!grepl("X",names(UV2))]
+#write.csv(UV2,"~/Dropbox/Research/Michigan/Dissertation - Robots/Uncanny Valley/v2.0/Private/UV2.csv")
 ```
 
 
-```{r impute_missForest}
-library(missForest)
 
-UV2.full <- missForest(UV2.imp)
 
-#check imputed values
-UV2.imp = UV2.full$ximp
+#Descriptives
+```{r ID}
+ID = UV2 %>%
+  select(c(ends_with('ID'))) %>%
+  select(-Actroid)%>%
+  gather("robot","ID",-1) %>%
+  mutate(robot = gsub("RBI\\.|\\.ID","",robot)) %>%
+  filter(!is.na(ID)) %>%
+  mutate(ID.as.robot = ifelse(ID=="Yes",1,0)) %>%
+  group_by(robot) %>%
+  summarise(prop.ID.robot = mean(ID.as.robot)) %>%
+  mutate(robot = factor(robot, levels = robot[order(-prop.ID.robot)]))
+
+ggplot(ID, aes(y=prop.ID.robot, x=robot, fill=robot)) + 
+  geom_bar(position="dodge", stat = "summary", fun.y = "mean") + 
+  geom_text(aes(label=round(prop.ID.robot,3)), position=position_dodge(width=0.9), vjust=-0.25) + 
+  guides(fill=FALSE) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  ggtitle("Proportion of identifications as robot") +
+  ylab("Proportion")
+```
+
+
+```{r RBI}
+RBI = UV2 %>%
+  select(c(ResponseID,starts_with('RBI'),Sex,Age)) %>%
+  gather("code", "value", names(UV2 %>% select(starts_with('RBI')))) %>%
+  separate(code, into = c("code", "robot","item"), sep = "\\.") %>%
+  spread(item, value) %>%
+  select(-c(code,ID)) %>%
+  na.omit() #%>%
+#  filter(robot != "stan",
+#        robot != "asimo")
+
+robot = RBI$robot
+
+RBI = RBI %>%
+  mutate_at(vars(-ResponseID,-robot), funs(as.numeric))
+```
+
+#Analysis of Questions
+##Confirmatory Factor Analysis
+
+```{r CFA}
+cfa = RBI %>%
+  select(-c(ResponseID,Sex,Age,robot))
+
+cfa.model <- ' agency  =~ choose + think + moral
+              exp =~ scared + pain + hungry
+              uv   =~ creepy + weird '
+
+fit <- cfa(cfa.model, data=cfa)
+
+summary(fit, fit.measures=TRUE)
+inspect(fit,what="std")
+```
+
+##Partial Correlations
+```{r partial_correlations}
+# https://joelcadwell.blogspot.com/2015/10/undirected-graphs-when-causality-is.html
+# RBI.part.cor.x = RBI.part.cor %>% 
+#  select(-c(feel,moral))
+part.cor = RBI %>%
+  select(-c(robot,ResponseID,moral,feel,Sex,Age))
+
+#scale RBI matrix for partial correlations calculations
+part.cor = as.data.frame(scale(part.cor))
+
+#calculate partial correlations
+sparse_matrix<-EBICglasso(cor(part.cor), n=dim(part.cor)[1],threshold=TRUE)
+
+#plot partial correlations
+ug<-qgraph(sparse_matrix, layout="spring", 
+           labels=names(part.cor), label.scale=FALSE,
+           label.cex=1, node.width=1)
+```
+
+#A Priori Variables
+```{r aggregates}
+#AGENCY WITH OR WITHOUT MORAL???
+RBI$agency = rowMeans(RBI[c("think","choose")],na.rm=T)
+RBI$exp = rowMeans(RBI[c("pain","scared","hungry")],na.rm=T)
+RBI$uv = rowMeans(RBI[c("weird","creepy")],na.rm=T)
+```
+
+```{r uv_plot}
+uv_plot = RBI %>%
+  select(robot,uv) %>%
+  group_by(robot) %>%
+  summarize(uv.mn = mean(uv), uv.se=std.error(uv)) %>%
+  arrange(desc(uv.mn)) %>%
+  mutate(robot = factor(robot, levels = robot[order(-uv.mn)]))
+
+ggplot(uv_plot, aes(y=uv.mn, x=robot, fill=robot)) + 
+  geom_bar(position="dodge", stat = "summary", fun.y='mean') + 
+  geom_errorbar(aes(ymin=uv.mn-2*uv.se, ymax=uv.mn+2*uv.se), width=.2) + 
+  geom_text(aes(label=round(uv.mn,2)), y = uv_plot$uv.mn+2*uv_plot$uv.se, vjust=-.5) + 
+  guides(fill=FALSE) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  ggtitle("Average ratings of uncanniness") +
+  ylab("Rating")
+```
+
+```{r agency_plot}
+agency_plot = RBI %>%
+  select(robot,agency) %>%
+  group_by(robot) %>%
+  summarize(agency.mn = mean(agency), agency.se=std.error(agency)) %>%
+  arrange(desc(agency.mn)) %>%
+  mutate(robot = factor(robot, levels = robot[order(-agency.mn)]))
+
+ggplot(agency_plot, aes(y=agency.mn, x=robot, fill=robot)) + 
+  geom_bar(position="dodge", stat = "summary", fun.y='mean') + 
+  geom_errorbar(aes(ymin=agency.mn-2*agency.se, ymax=agency.mn+2*agency.se), width=.2) + 
+  geom_text(aes(label=round(agency.mn,2)), y=agency_plot$agency.mn+2*agency_plot$agency.se, vjust=-.5) + 
+  guides(fill=FALSE) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  ggtitle("Average ratings of agency") +
+  ylab("Rating")
+```
+
+```{r exp_plot}
+exp_plot = RBI %>%
+  select(robot,exp) %>%
+  group_by(robot) %>%
+  summarize(exp.mn = mean(exp), exp.se=std.error(exp)) %>%
+  arrange(desc(exp.mn)) %>%
+  mutate(robot = factor(robot, levels = robot[order(-exp.mn)]))
+
+ggplot(exp_plot, aes(y=exp.mn, x=robot, fill=robot)) + 
+  geom_bar(position="dodge", stat = "summary", fun.y='mean') + 
+  geom_errorbar(aes(ymin=exp.mn-2*exp.se, ymax=exp.mn+2*exp.se), width=.2) + 
+  geom_text(aes(label=round(exp.mn,2)), y=exp_plot$exp.mn+2*exp_plot$exp.se, vjust=-.5) + 
+  guides(fill=FALSE) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  ggtitle("Average ratings of experience") +
+  ylab("Rating")
+```
+
+```{r agency_by_exp_plot}
+agg_plot = agency_plot %>%
+  join(exp_plot)
+
+ggplot(agg_plot, aes(agency.mn,exp.mn,color=robot)) +
+  geom_point() + 
+  geom_text(aes(label=robot), vjust = -.5) + 
+  guides(color=FALSE) + 
+  ggtitle("Average Ratings of Agency by Experience")
+```
+
+```{r agg_plot_by_robot}
+ggplot(RBI, aes(agency,exp,color=robot)) +
+  geom_jitter() + 
+  ggtitle("All Data Points based on A Prior Aggregates")
+```
+
+```{r regression}
+RBI$exp.c = scale(RBI$exp)
+RBI$agency.c = scale(RBI$agency)
+RBI$uv.c = scale(RBI$uv)
+
+cor.test(RBI$exp.c,RBI$agency.c)
+summary(lm(uv.c ~ exp.c+agency.c+Sex+Age,data=RBI))
+lm.beta(lm(uv.c ~ exp.c+agency.c+Sex+Age,data=RBI))
+```
+
+##K-means clustering of a priori variables
+```{r k_means_clustering_on_apriori}
+km = RBI %>%
+  select(ResponseID,robot,agency,exp,uv)
+
+km.uv = km$uv
+km.robot = km$robot
+km.ResponseID = km$ResponseID
+
+km = km %>% select(-robot,-uv,-ResponseID)
+
+n.clusters = 4
+
+set.seed(2468)
+km.out=kmeans(km,n.clusters,nstart=50)
+
+km = km %>%
+  mutate(cluster = as.factor(km.out$cluster),
+         robot = km.robot,
+         uv = km.uv,
+         ResponseID = km.ResponseID,
+         cluster.name = 
+           case_when(
+             cluster == 1 ~ "LAHE",
+             cluster == 2 ~ "HAHE",
+             cluster == 3 ~ "HALE",
+             cluster == 4 ~ "LALE"
+             )) %>%
+  arrange(cluster.name)
+
+ggplot(km, aes(agency, exp, color=cluster.name)) + 
+  geom_jitter() +
+  ggtitle("K-Means Clustering Results with K=4")
+km.out$tot.withinss
+
+pander(table(km$cluster.name))
+
+summary(lm(uv~cluster.name,data=km))
+lm.beta(lm(uv~cluster.name,data=km))
+```
+
+##Distribution of robots among k-means clusters
+```{r visualizing_km_clustering_on_robot_a_priori}
+clusters = km %>%
+  count(robot,cluster.name)%>%
+  group_by(robot) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster.name, freq) %>%
+  ungroup() %>%
+  replace(is.na(.), 0)
+
+clusters.robot = clusters$robot
+
+clusters = clusters %>% select(-robot)
+  
+km.out=kmeans(clusters,4,nstart=50)
+
+clusters = clusters %>%
+  mutate(cluster = as.factor(km.out$cluster),
+         robot = clusters.robot)
+
+clusters %>% arrange(cluster)
+
+#table(clusters$robot,clusters$cluster)[order(clusters$cluster),]
+```
+
+
+```{r hc_on_robot_a_priori, eval=FALSE}
+#find hierarchical clusters
+hc = km %>%
+  count(robot,cluster.name)%>%
+  group_by(robot) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster.name, freq) %>%
+  ungroup() %>%
+  replace(is.na(.), 0) %>%
+  filter(robot != "asimo",
+         robot != "stan")
+
+hc.robot = hc$robot
+
+hc = hc %>% select(-robot) 
+
+n.clusters = 4
+
+hc.sd=scale(hc)
+hc.dist=dist(hc.sd)
+hc.tree = hclust(hc.dist, method="average")
+
+hc$cluster = as.factor(cutree(hc.tree, k = n.clusters, h = NULL))
+hc$robot = hc.robot
+
+hc %>% arrange(cluster)
+```
+
+```{r CFA_regression}
+RBI = RBI %>%
+  select(-c(exp.c,agency.c,uv.c)) %>%
+  dplyr::mutate(
+    robot.group = case_when(
+      robot == "actroid" | robot == "sofia" ~ "human-like",
+      robot == "spot" | robot == "atlas" ~ "goal-directed",
+      TRUE ~  "robotic"
+    )
+  )
+
+RBI$exp.c = scale(RBI$exp)
+RBI$agency.c = scale(RBI$agency)
+RBI$uv.c = scale(RBI$uv)
+
+summary(lm(uv~agency.c+exp.c+robot.group+Sex+Age, data=RBI))
+lm.beta(lm(uv~agency.c+exp.c+robot.group+Sex+Age, data=RBI))
+```
+
+
+##Distribution of participants among k-means clusters
+```{r visualizing_km_clustering_on_participant_a_priori}
+clusters = km %>%
+  count(ResponseID,cluster) %>%
+  group_by(ResponseID) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster, freq) %>%
+  ungroup() %>%
+  mutate(type = ifelse(!is.na(`1`),1,0)+ifelse(!is.na(`2`),1,0)+ifelse(!is.na(`3`),1,0)+ifelse(!is.na(`4`),1,0)) %>%
+  mutate(type = as.factor(type)) %>%
+  replace(is.na(.), 0) %>%
+  mutate(
+    single.class = case_when(
+      `1` == 1 & `2` == 0 & `3` == 0 & `4` == 0 ~ "LAHE",
+      `1` == 0 & `2` == 1 & `3` == 0 & `4` == 0 ~ "HAHE",
+      `1` == 0 & `2` == 0 & `3` == 1 & `4` == 0 ~ "HALE",
+      `1` == 0 & `2` == 0 & `3` == 0 & `4` == 1 ~ "LALE",
+      TRUE ~  "0"
+    )) %>%
+  mutate(
+    double.class = case_when(
+      `1` > 0 & `2` > 0 & `3` == 0 & `4` == 0 ~ "LAHE & HAHE",
+      `1` > 0 & `2` == 0 & `3` > 0 & `4` == 0 ~ "LAHE & HALE",
+      `1` > 0 & `2` == 0 & `3` == 0 & `4` > 0 ~ "LAHE & LALE",
+      `1` == 0 & `2` > 0 & `3` > 0 & `4` == 0 ~ "HAHE & HALE",
+      `1` == 0 & `2` > 0 & `3` == 0 & `4` > 0 ~ "HAHE & LALE",
+      `1` == 0 & `2` == 0 & `3` > 0 & `4` > 0 ~ "HALE & LALE",
+      TRUE ~  "0"
+    ))
+             
+pander(table(clusters$type), caption="Number of participants that fall into 1, 2, 3, or 4 clusters")
+pander(table(clusters$single.class), caption="Number of participants that fall into only one cluster")
+pander(table(clusters$double.class), caption="Number of participants that fall into only two clusters")
+
+ggplot(clusters, aes(`1`, `2`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+ggplot(clusters, aes(`1`, `3`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+ggplot(clusters, aes(`2`, `3`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+```
+
+```{r hierarchical_clustering, eval=FALSE}
+#find hierarchical clusters
+hc = RBI %>%
+  select(ResponseID,robot,agency,exp,uv)
+
+hc.uv = hc$uv
+hc.robot = hc$robot
+hc.ResponseID = hc$ResponseID
+
+hc = hc %>% select(-robot,-uv,-ResponseID)
+
+n.clusters = 3
+
+hc.sd=scale(hc)
+hc.dist=dist(hc.sd)
+hc.tree = hclust(hc.dist, method="median")
+
+hc$cluster = as.factor(cutree(hc.tree, k = n.clusters, h = NULL))
+hc$robot = hc.robot
+hc$uv = hc.uv
+hc$ResponseID = hc.ResponseID
+
+ggplot(hc, aes(agency, exp, color=cluster)) + 
+  geom_jitter() +
+  ggtitle("Hierarchical Clustering Results with K=3")
+```
+
+#Data-driven aggregates
+##Principal Components Analysis
+
+```{r PCA}
+#PCA for only original data
+pca.uv = RBI$uv
+pca.ResponseID = RBI$ResponseID
+pca.Sex = RBI$Sex
+pca.Age = RBI$Age
+
+pca = RBI %>%
+  select(-c(robot,ResponseID,agency,exp,uv,agency.c,exp.c,uv.c,creepy,weird,Sex,Age,robot.group)) %>%
+  mutate_all(as.numeric)
+
+pr.out=prcomp(pca, scale=TRUE)
+
+#scree plots
+pve=100*pr.out$sdev^2/sum(pr.out$sdev^2)
+{par(mfrow=c(1,2))
+plot(pve, type="o", ylab="PVE", xlab="Principal Component",
+col =" blue ")
+plot(cumsum(pve), type="o", ylab="Cumulative PVE", xlab="
+Principal Component ", col =" brown3 ")
+}
+
+#rotation matrix
+sweep(abs(pr.out$rotation), 2, colSums(abs(pr.out$rotation)), "/")
+summary(pr.out)
+
+#extract principal components for plotting
+pca = as.data.frame(pr.out$x[,1:2])
+pca$robot = robot
+pca$uv = pca.uv
+pca$ResponseID = pca.ResponseID
+pca$Sex = pca.Sex
+pca$Age = pca.Age
+
+pca = pca %>%
+  mutate(
+    robot.group = case_when(
+      robot == "actroid" | robot == "sofia" ~ "human-like",
+      robot == "spot" | robot == "atlas" ~ "goal-directed",
+      TRUE ~  "robotic"
+    )
+  )
+
+#plot PC1 by PC2 by robot groups
+ggplot(pca, aes(x = PC1, y = PC2, color = robot.group)) + 
+  geom_point() + 
+  geom_smooth(method="loess")
+
+
+#https://www.r-bloggers.com/computing-and-visualizing-pca-in-r/
+
+#library(devtools)
+#install_github("ggbiplot", "vqv")
+ 
+ggbiplot(pr.out, choices = c(1,2), obs.scale = 1, var.scale = 1,
+         groups = pca$robot.group, ellipse = TRUE,
+         circle = TRUE) + 
+  scale_color_discrete(name = '') +
+  theme(legend.direction = 'horizontal', 
+               legend.position = 'top')
+
+#plot each variables coefficients inside a unit circle to get insight on a possible interpretation for PCs
+#https://gist.github.com/thigm85/7689508
+theta <- seq(0,2*pi,length.out = 100)
+circle <- data.frame(x = cos(theta), y = sin(theta))
+loadings <- data.frame(pr.out$rotation, 
+                       .names = row.names(pr.out$rotation))
+
+ggplot(circle,aes(x,y)) + 
+  geom_path() + 
+  geom_text(data=loadings, 
+            mapping=aes(x = PC2, y = PC3, label = .names, colour = .names)) +
+  coord_fixed(ratio=1) +
+  labs(x = "PC1", y = "PC2")
+
+```
+
+```{r PCA_regression}
+cor.test(pca$PC1,pca$PC2)
+
+summary(lm(uv~PC1+PC2+robot.group+Sex+Age, data=pca))
+lm.beta(lm(uv~PC1+PC2+robot.group+Sex+Age, data=pca))
+```
+
+
+##K-means clustering of a data-driven components
+```{r k_means_clustering_on_PCA}
+pca.uv = pca$uv
+pca.robot = pca$robot
+pca.ResponseID = pca$ResponseID
+pca.robot.group = pca$robot.group
+pca.Sex = pca$Sex
+pca.Age = pca$Age
+
+km = pca %>% select(-c(robot,uv,robot.group,ResponseID,Sex,Age))
+
+n.clusters = 4
+
+km.out=kmeans(km,n.clusters,nstart=50)
+
+km$cluster = as.factor(km.out$cluster)
+km$robot = pca.robot
+km$uv = pca.uv
+km$ResponseID = pca.ResponseID
+km$Sex = pca.Sex
+km$Age = pca.Age
+
+ggplot(km, aes(PC1, PC2, color=cluster)) + 
+  geom_jitter(width = .7, height = .7) +
+  ggtitle("K-Means Clustering Results with K=3")
+km.out$tot.withinss
+```
+
+##Distribution of robots among k-means clusters (PCA)
+```{r visualizing_km_clustering_on_robot_pca}
+clusters = km %>%
+  count(robot,cluster)%>%
+  group_by(robot) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster, freq) %>%
+  ungroup() %>%
+  replace(is.na(.), 0)
+
+clusters.robot = clusters$robot
+
+clusters = clusters %>% select(-robot)
+  
+km.out=kmeans(clusters,3,nstart=50)
+
+clusters$cluster = km.out$cluster
+clusters$robot = clusters.robot
+table(clusters$robot,clusters$cluster)[order(clusters$cluster),]
+
+summary(lm(uv~cluster,data=km))
+lm.beta(lm(uv~cluster,data=km))
+```
+
+##Distribution of participants among k-means clusters (PCA)
+```{r visualizing_km_clustering_on_participant_pca}
+clusters = km %>%
+  count(ResponseID,cluster) %>%
+  group_by(ResponseID) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster, freq) %>%
+  ungroup() %>%
+  mutate(type = ifelse(!is.na(`1`),1,0)+ifelse(!is.na(`2`),1,0)+ifelse(!is.na(`3`),1,0)) %>%  
+  mutate(type = as.factor(type)) %>%
+  replace(is.na(.), 0) %>%
+  mutate(
+    single.class = case_when(
+      `1` == 1 & `2` == 0 & `3` == 0 ~ "1",
+      `1` == 0 & `2` == 1 & `3` == 0 ~ "2",
+      `1` == 0 & `2` == 0 & `3` == 1 ~ "3",
+      TRUE ~  "0"
+    )) %>%
+  mutate(
+    double.class = case_when(
+      `1` > 0 & `2` > 0 & `3` == 0 ~ "1 & 2",
+      `1` > 0 & `2` == 0 & `3` > 0 ~ "1 & 3",
+      `1` == 0 & `2` > 0 & `3` > 0 ~ "2 & 3",
+      TRUE ~  "0"
+    ))
+
+pander(table(clusters$type), caption="Number of participants that fall into 1, 2, or 3 clusters")
+pander(table(clusters$single.class), caption="Number of participants that fall into only one cluster")
+pander(table(clusters$double.class), caption="Number of participants that fall into only two clusters")
+
+ggplot(clusters, aes(`1`, `2`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+ggplot(clusters, aes(`1`, `3`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+ggplot(clusters, aes(`2`, `3`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+```
+
+#Imputed Data
+```{r preprocessing_for_imputation}
+#select data for imputing missing interview questions and robots
+RBI = UV2 %>%
+  select(c(ResponseID,Sex,Age,starts_with('RBI')))
+
+ResponseID = RBI$ResponseID
+Sex = RBI$Sex
+Age = RBI$Age
+
+RBI = RBI %>%
+  select(-ResponseID)
+```
+
+```{r impute_missForest, include=FALSE}
+#impute missing categorical data using missForest for RBI
+set.seed(250)
+RBI.mf <- missForest(RBI)
+
+#store imputed values
+RBI.imp = RBI.mf$ximp
+RBI.imp$ResponseID = UV2$ResponseID
 
 #check imputation error
-UV2.full$OOBerror
+RBI.mf$OOBerror
+```
+
+```{r RBI_imputed}
+#format imputed RBI data
+RBI.imp$ResponseID = ResponseID
+RBI.imp$Sex = Sex
+RBI.imp$Age = Age
+
+RBI.imp = RBI.imp %>%
+  gather("code", "value", names(RBI.imp %>% select(starts_with('RBI')))) %>%
+  separate(code, into = c("code", "robot","item"), sep = "\\.") %>%
+  spread(item, value) %>%
+  select(-c(code,ID)) %>%
+  na.omit()
+
+robot = RBI.imp$robot
+
+RBI.imp = RBI.imp %>%
+  mutate_at(vars(-ResponseID,-robot,-Sex,-Age), funs(as.numeric))
+```
+
+#Analysis of Questions
+
+##Exploratory/Confirmatory Factor Analysis
+```{r CFA_imputed}
+cfa = RBI.imp %>%
+  select(-c(ResponseID,robot,feel,Sex,Age))
+
+cfa.model <- ' agency  =~ choose + think + moral
+              exp =~ scared + pain + hungry
+              uv   =~ creepy + weird '
+
+fit <- cfa(cfa.model, data=cfa)
+
+summary(fit, fit.measures=TRUE)
+inspect(fit,what="std")
+```
+
+##Partial Correlations
+```{r partial_correlations_imputed}
+# https://joelcadwell.blogspot.com/2015/10/undirected-graphs-when-causality-is.html
+# RBI.part.cor.x = RBI.part.cor %>% 
+#  select(-c(feel,moral))
+RBI.part.cor = RBI.imp %>%
+  select(-c(robot,ResponseID,Sex,Age))
+
+#scale RBI matrix for partial correlations calculations
+RBI.part.cor = as.data.frame(scale(RBI.part.cor))
+
+#calculate partial correlations
+sparse_matrix<-EBICglasso(cor(RBI.part.cor), n=dim(RBI.part.cor)[1],threshold=TRUE)
+
+#plot partial correlations
+ug<-qgraph(sparse_matrix, layout="spring", 
+           labels=names(RBI.part.cor), label.scale=FALSE,
+           label.cex=1, node.width=1)
+```
+
+```{r aggregates_imputed}
+#AGENCY WITH OR WITHOUT MORAL???
+RBI.imp$agency = rowMeans(RBI.imp[c("think","choose","moral")],na.rm=T)
+RBI.imp$exp = rowMeans(RBI.imp[c("pain","scared","hungry")],na.rm=T)
+RBI.imp$uv = rowMeans(RBI.imp[c("weird","creepy")],na.rm=T)
+```
+
+#A Priori Variables
+```{r uv_plot_imputed}
+uv_plot = RBI.imp %>%
+  select(robot,uv) %>%
+  group_by(robot) %>%
+  summarize(uv.mn = mean(uv), uv.se=std.error(uv)) %>%
+  arrange(desc(uv.mn)) %>%
+  mutate(robot = factor(robot, levels = robot[order(-uv.mn)]))
+
+ggplot(uv_plot, aes(y=uv.mn, x=robot, fill=robot)) + 
+  geom_bar(position="dodge", stat = "summary", fun.y='mean') + 
+  geom_errorbar(aes(ymin=uv.mn-2*uv.se, ymax=uv.mn+2*uv.se), width=.2) + 
+  geom_text(aes(label=round(uv.mn,2)), y = uv_plot$uv.mn+2*uv_plot$ uv.se, vjust=-.5) + 
+  guides(fill=FALSE) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  ggtitle("Average ratings of uncanniness") +
+  ylab("Rating")
+```
+
+```{r agency_plot_imputed}
+agency_plot = RBI.imp %>%
+  select(robot,agency) %>%
+  group_by(robot) %>%
+  summarize(agency.mn = mean(agency), agency.se=std.error(agency)) %>%
+  arrange(desc(agency.mn)) %>%
+  mutate(robot = factor(robot, levels = robot[order(-agency.mn)]))
+
+ggplot(agency_plot, aes(y=agency.mn, x=robot, fill=robot)) + 
+  geom_bar(position="dodge", stat = "summary", fun.y='mean') + 
+  geom_errorbar(aes(ymin=agency.mn-2*agency.se, ymax=agency.mn+2*agency.se), width=.2) + 
+  geom_text(aes(label=round(agency.mn,2)), y = agency_plot$agency.mn+2*agency_plot$agency.se, vjust = -.5) + 
+  guides(fill=FALSE) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  ggtitle("Average ratings of agency") +
+  ylab("Rating")
+```
+
+```{r exp_plot_imputed}
+exp_plot = RBI.imp %>%
+  select(robot,exp) %>%
+  group_by(robot) %>%
+  summarize(exp.mn = mean(exp), exp.se=std.error(exp)) %>%
+  arrange(desc(exp.mn)) %>%
+  mutate(robot = factor(robot, levels = robot[order(-exp.mn)]))
+
+ggplot(exp_plot, aes(y=exp.mn, x=robot, fill=robot)) + 
+  geom_bar(position="dodge", stat = "summary", fun.y='mean') + 
+  geom_errorbar(aes(ymin=exp.mn-2*exp.se, ymax=exp.mn+2*exp.se), width=.2) + 
+  geom_text(aes(label=round(exp.mn,2)), y = exp_plot$exp.mn+2*exp_plot$exp.se, vjust = -.5) + 
+  guides(fill=FALSE) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  ggtitle("Average ratings of experience") +
+  ylab("Rating")
+```
+
+```{r agency_by_exp_plot_imputed}
+agg_plot = agency_plot %>%
+  join(exp_plot)
+
+ggplot(agg_plot, aes(agency.mn,exp.mn,color=robot)) +
+  geom_point() + 
+  geom_text(aes(label=robot), vjust = -.5) + 
+  guides(color=FALSE) + 
+  ggtitle("Average Ratings of Agency by Experience")
+```
+
+```{r agg_plot_by_robot_imputed}
+ggplot(RBI.imp, aes(agency,exp,color=robot)) +
+  geom_jitter() + 
+  ggtitle("All Data Points based on A Prior Aggeregates")
+```
+
+```{r regression_imputed}
+RBI.imp$exp.c = scale(RBI.imp$exp)
+RBI.imp$agency.c = scale(RBI.imp$agency)
+RBI.imp$uv.c = scale(RBI.imp$uv)
+
+cor.test(RBI.imp$exp.c,RBI.imp$agency.c)
+summary(lm(uv.c ~ exp.c+agency.c+Sex+Age,data=RBI.imp))
+```
+
+##K-means clustering of a priori variables
+```{r k_means_clustering_on_apriori_imputed}
+km = RBI.imp %>%
+  select(ResponseID,robot,agency,exp,uv)
+
+km.uv = km$uv
+km.robot = km$robot
+km.ResponseID = km$ResponseID
+
+km = km %>% select(-robot,-uv,-ResponseID)
+
+n.clusters = 3
+
+km.out=kmeans(km,n.clusters,nstart=50)
+
+km$cluster = as.factor(km.out$cluster)
+km$robot = km.robot
+km$uv = km.uv
+km$ResponseID = km.ResponseID
+
+ggplot(km, aes(agency, exp, color=cluster)) + 
+  geom_jitter() +
+  ggtitle("K-Means Clustering Results with K=3")
+km.out$tot.withinss
+```
+
+##Distribution of robots among k-means clusters
+```{r visualizing_km_clustering_on_robot_a_priori_imputed}
+clusters = km %>%
+  count(robot,cluster)%>%
+  group_by(robot) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster, freq) %>%
+  ungroup() %>%
+  replace(is.na(.), 0)
+
+clusters.robot = clusters$robot
+
+clusters = clusters %>% select(-robot)
+  
+km.out=kmeans(clusters,3,nstart=50)
+
+clusters$cluster = km.out$cluster
+clusters$robot = clusters.robot
+table(clusters$robot,clusters$cluster)[order(clusters$cluster),]
+
+summary(lm(uv~cluster,data=km))
+lm.beta(lm(uv~cluster,data=km))
+```
+
+```{r CFA_regression_imputed}
+RBI = RBI.imp %>%
+  select(-c(exp.c,agency.c,uv.c)) %>%
+  dplyr::mutate(
+    robot.group = case_when(
+      robot == "actroid" | robot == "sofia" ~ "human-like",
+      robot == "spot" | robot == "atlas" ~ "goal-directed",
+      TRUE ~  "robotic"
+    )
+  )
+
+RBI$exp.c = scale(RBI$exp)
+RBI$agency.c = scale(RBI$agency)
+RBI$uv.c = scale(RBI$uv)
+
+summary(lm(uv~agency.c+exp.c+robot.group+Sex+Age, data=RBI))
+lm.beta(lm(uv~agency.c+exp.c+robot.group+Sex+Age, data=RBI))
+```
+
+##Distribution of participants among k-means clusters
+```{r visualizing_km_clustering_on_participant_a_priori_imputed}
+clusters = km %>%
+  count(ResponseID,cluster) %>%
+  group_by(ResponseID) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster, freq) %>%
+  ungroup() %>%
+  mutate(type = ifelse(!is.na(`1`),1,0)+ifelse(!is.na(`2`),1,0)+ifelse(!is.na(`3`),1,0)) %>%  
+  mutate(type = as.factor(type)) %>%
+  replace(is.na(.), 0) %>%
+  mutate(
+    single.class = case_when(
+      `1` == 1 & `2` == 0 & `3` == 0 ~ "1",
+      `1` == 0 & `2` == 1 & `3` == 0 ~ "2",
+      `1` == 0 & `2` == 0 & `3` == 1 ~ "3",
+      TRUE ~  "0"
+    )) %>%
+  mutate(
+    double.class = case_when(
+      `1` > 0 & `2` > 0 & `3` == 0 ~ "1 & 2",
+      `1` > 0 & `2` == 0 & `3` > 0 ~ "1 & 3",
+      `1` == 0 & `2` > 0 & `3` > 0 ~ "2 & 3",
+      TRUE ~  "0"
+    ))
+
+pander(table(clusters$type), caption="Number of participants that fall into 1, 2, or 3 clusters")
+pander(table(clusters$single.class), caption="Number of participants that fall into only one cluster")
+pander(table(clusters$double.class), caption="Number of participants that fall into only two clusters")
+
+ggplot(clusters, aes(`1`, `2`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+ggplot(clusters, aes(`1`, `3`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+ggplot(clusters, aes(`2`, `3`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+```
+
+```{r hierarchical_clustering_imputed, eval=FALSE}
+#find hierarchical clusters
+hc = RBI.imp %>%
+  select(ResponseID,robot,agency,exp,uv)
+
+hc.uv = hc$uv
+hc.robot = hc$robot
+hc.ResponseID = hc$ResponseID
+
+hc = hc %>% select(-robot,-uv,-ResponseID)
+
+n.clusters = 3
+
+hc.sd=scale(hc)
+hc.dist=dist(hc.sd)
+hc.tree = hclust(hc.dist, method="ward.D")
+
+hc$cluster = as.factor(cutree(hc.tree, k = n.clusters, h = NULL))
+hc$robot = hc.robot
+hc$uv = hc.uv
+hc$ResponseID = hc.ResponseID
+
+ggplot(hc, aes(agency, exp, color=cluster)) + 
+  geom_jitter() +
+  ggtitle("Hierarchical Clustering Results with K=3")
+```
+
+#Data-driven aggregates
+##Principal Components Analysis
+
+```{r PCA_imputed}
+#PCA for only original data
+pca.uv = RBI.imp$uv
+pca.ResponseID = RBI.imp$ResponseID
+pca.Sex = RBI.imp$Sex
+pca.Age = RBI.imp$Age
+
+pca = RBI.imp %>%
+  select(-c(robot,ResponseID,agency,exp,uv,agency.c,exp.c,uv.c,creepy,weird,Sex,Age)) %>%
+  mutate_all(as.numeric)
+
+pr.out=prcomp(pca, scale=TRUE)
+
+#scree plots
+pve=100*pr.out$sdev^2/sum(pr.out$sdev^2)
+{par(mfrow=c(1,2))
+plot(pve, type="o", ylab="PVE", xlab="Principal Component",
+col =" blue ")
+plot(cumsum(pve), type="o", ylab="Cumulative PVE", xlab="
+Principal Component ", col =" brown3 ")
+}
+
+#rotation matrix
+sweep(abs(pr.out$rotation), 2, colSums(abs(pr.out$rotation)), "/")
+summary(pr.out)
+
+#extract principal components for plotting
+pca = as.data.frame(pr.out$x[,1:2])
+pca$robot = robot
+pca$uv = pca.uv
+pca$ResponseID = pca.ResponseID
+pca$Sex = pca.Sex
+pca$Age = pca.Age
+
+pca = pca %>%
+  mutate(
+    robot.group = case_when(
+      robot == "actroid" | robot == "sofia" ~ "human-like",
+      robot == "spot" | robot == "atlas" ~ "goal-directed",
+      TRUE ~  "robotic"
+    )
+  )
+
+#plot PC1 by PC2 by robot groups
+ggplot(pca, aes(x = PC1, y = PC2, color = robot.group)) + 
+  geom_point() + 
+  geom_smooth(method="loess")
+
+
+#https://www.r-bloggers.com/computing-and-visualizing-pca-in-r/
+
+#library(devtools)
+#install_github("ggbiplot", "vqv")
+ 
+ggbiplot(pr.out, choices = c(1,2), obs.scale = 1, var.scale = 1,
+         groups = pca$robot.group, ellipse = TRUE,
+         circle = TRUE) + 
+  scale_color_discrete(name = '') +
+  theme(legend.direction = 'horizontal', 
+               legend.position = 'top')
+
+#plot each variables coefficients inside a unit circle to get insight on a possible interpretation for PCs
+#https://gist.github.com/thigm85/7689508
+theta <- seq(0,2*pi,length.out = 100)
+circle <- data.frame(x = cos(theta), y = sin(theta))
+loadings <- data.frame(pr.out$rotation, 
+                       .names = row.names(pr.out$rotation))
+
+ggplot(circle,aes(x,y)) + 
+  geom_path() + 
+  geom_text(data=loadings, 
+            mapping=aes(x = PC2, y = PC3, label = .names, colour = .names)) +
+  coord_fixed(ratio=1) +
+  labs(x = "PC1", y = "PC2")
+
+summary(lm(uv~PC1+PC2+robot.group, data=pca))
+lm.beta(lm(uv~PC1+PC2+robot.group, data=pca))
+```
+
+```{r PCA_regression_imputed}
+cor.test(pca$PC1,pca$PC2)
+
+summary(lm(uv~PC1+PC2+robot.group+Sex+Age, data=pca))
+lm.beta(lm(uv~PC1+PC2+robot.group+Sex+Age, data=pca))
+```
+
+##K-means clustering of a data-driven components
+```{r k_means_clustering_on_PCA_imputed}
+pca.uv = pca$uv
+pca.robot = pca$robot
+pca.ResponseID = pca$ResponseID
+pca.robot.group = pca$robot.group
+pca.Sex = pca$Sex
+pca.Age = pca$Age
+
+km = pca %>% select(-c(robot,uv,robot.group,ResponseID,Sex,Age))
+
+n.clusters = 3
+
+km.out=kmeans(km,n.clusters,nstart=50)
+
+km$cluster = as.factor(km.out$cluster)
+km$robot = pca.robot
+km$uv = pca.uv
+km$ResponseID = pca.ResponseID
+km$Sex = pca.Sex
+km$Age = pca.Age
+
+ggplot(km, aes(PC1, PC2, color=cluster)) + 
+  geom_jitter(width = .7, height = .7) +
+  ggtitle("K-Means Clustering Results with K=3")
+km.out$tot.withinss
+```
+
+##Distribution of robots among k-means clusters (PCA)
+```{r visualizing_km_clustering_on_robot_pca_imputed}
+clusters = km %>%
+  count(robot,cluster)%>%
+  group_by(robot) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster, freq) %>%
+  ungroup() %>%
+  replace(is.na(.), 0)
+
+clusters.robot = clusters$robot
+
+clusters = clusters %>% select(-robot)
+  
+km.out=kmeans(clusters,3,nstart=50)
+
+clusters$cluster = km.out$cluster
+clusters$robot = clusters.robot
+table(clusters$robot,clusters$cluster)[order(clusters$cluster),]
+
+summary(lm(uv~cluster,data=km))
+lm.beta(lm(uv~cluster,data=km))
+```
+
+##Distribution of participants among k-means clusters (PCA)
+```{r visualizing_km_clustering_on_participant_pca_imputed}
+clusters = km %>%
+  count(ResponseID,cluster) %>%
+  group_by(ResponseID) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster, freq) %>%
+  ungroup() %>%
+  mutate(type = ifelse(!is.na(`1`),1,0)+ifelse(!is.na(`2`),1,0)+ifelse(!is.na(`3`),1,0)) %>%  
+  mutate(type = as.factor(type)) %>%
+  replace(is.na(.), 0) %>%
+  mutate(
+    single.class = case_when(
+      `1` == 1 & `2` == 0 & `3` == 0 ~ "1",
+      `1` == 0 & `2` == 1 & `3` == 0 ~ "2",
+      `1` == 0 & `2` == 0 & `3` == 1 ~ "3",
+      TRUE ~  "0"
+    )) %>%
+  mutate(
+    double.class = case_when(
+      `1` > 0 & `2` > 0 & `3` == 0 ~ "1 & 2",
+      `1` > 0 & `2` == 0 & `3` > 0 ~ "1 & 3",
+      `1` == 0 & `2` > 0 & `3` > 0 ~ "2 & 3",
+      TRUE ~  "0"
+    ))
+
+pander(table(clusters$type), caption="Number of participants that fall into 1, 2, or 3 clusters")
+pander(table(clusters$single.class), caption="Number of participants that fall into only one cluster")
+pander(table(clusters$double.class), caption="Number of participants that fall into only two clusters")
+
+ggplot(clusters, aes(`1`, `2`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+ggplot(clusters, aes(`1`, `3`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
+
+ggplot(clusters, aes(`2`, `3`, color=type)) + 
+  geom_jitter() + 
+  ggtitle("Proportion of responses that fall into k-means clusters")
 
 ```
 
 
-```{r}
-
-UV2.imp$SubID = UV2$SubID
-UV2.imp$Age = UV2$Age
-UV1 = UV2.imp[,grepl("UV1|SubID|Age",names(UV2.imp))]
-UV1$AgeGroup = ifelse(UV1$Age>9,"old","young")
-
-UV1.long = melt(UV1,id.vars=c("SubID","AgeGroup","Age"),variable.name="robot")
-UV1.long = UV1.long[!is.na(UV1.long$value),]
-ggplot(UV1.long, aes(x = robot,y = value, color=AgeGroup)) + 
-    geom_point(position="jitter")
-
-UV1.long$value = as.numeric(UV1.long$value)
-
-ggplot(UV1.long, aes(fill=AgeGroup, y=value, x=robot)) + 
-    geom_bar(position="dodge", stat = "summary", fun.y = "mean")
-```
-
-```{r unfolding_analysis} 
+##Unfolding analysis
+```{r unfolding_analysis_imputed, eval=FALSE} 
 #ALSCAL with levels=interval.
+RBI.ua = RBI.imp %>%
+  select(-c(robot,ResponseID,agency,exp,uv,agency.c,exp.c,uv.c,creepy,weird)) %>%
+  mutate_all(as.numeric)
 
-act = UV2 %>%
-  select(ends_with('.act')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.act', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-act$robot = 'actroid'
+#measure of endorsement is the count of any rating greater than 1
+ua = RBI.ua %>%
+  mutate(robot = robot) %>%
+  mutate_at(vars(-robot),funs(ifelse(.>1, 1, 0))) %>%
+  group_by(robot) %>%
+  summarize_all('mean')
 
-sof = UV2 %>%
-  select(ends_with('.sof')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.sof', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-sof$robot = 'sofia'
+#measure of endorsement is the mean response
+#ua = RBI.ua %>%
+#  mutate(robot = robot) %>%
+#  mutate_each(funs(./4),-robot) %>%
+#  group_by(robot) %>%
+#  summarize_all('mean')
 
-pep = UV2 %>%
-  select(ends_with('.pep')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.pep', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-pep$robot = 'pepper'
-
-tap = UV2 %>%
-  select(ends_with('.tap')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.tap', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-tap$robot = 'tapia'
-
-spot = UV2 %>%
-  select(ends_with('.spot')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.spot', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-spot$robot = 'spot'
-
-fes = UV2 %>%
-  select(ends_with('.fes')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.fes', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-fes$robot = 'festo'
-
-atlas = UV2 %>%
-  select(ends_with('.atlas')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.atlas', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-atlas$robot = 'atlas'
-
-kb = UV2 %>%
-  select(ends_with('.kb')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.kb', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-kb$robot = 'kaspar_back'
-
-kf = UV2 %>%
-  select(ends_with('.kf')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.kf', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-kf$robot = 'kaspar_front'
-
-nao = UV2 %>%
-  select(ends_with('.nao')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.nao', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-nao$robot = 'nao'
-
-stan = UV2 %>%
-  select(ends_with('.stan')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.stan', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-stan$robot = 'stan'
-
-ua.full = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
-ua = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
-
-ua$count = NULL
+#convert matrix to the appropriate shape for unfolding analysis
 ua.t = data.frame(t(ua))
 names(ua.t) = ua$robot 
 ua.t=ua.t[-nrow(ua.t),]
 
+#convert values to percentage
 ua = ua.t %>%
   mutate_all(as.character) %>%
   mutate_all(as.numeric) %>%
   mutate_all(funs(round(.,2)))*100
 
-library(smacof)
+#produce unfolding analysis plot
+#library(smacof)
 res <- unfolding(ua, type='interval')
 {plot(res, type = "p", pch = 25, col.columns = 3, ylim=c(-1,1),
 xlim=c(-1,1),
 label.conf.columns = list(label = TRUE, pos = 3, col = 3),
 col.rows = 8, label.conf.rows = list(label = TRUE, pos = 3, col = 8))
 abline(h=0,v=0)}
-
 ```
 
-```{r unfolding_analysis_young}
-act = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.act')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.act', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-act$robot = 'actroid'
+##Latent Class Analysis
+```{r latent_class_analysis_imputed, eval=FALSE}
+lca = RBI.imp %>%
+  spread()
+  mutate(uv = creepy+weird/2) %>%
+  select(-ResponseID,-creepy,-weird)
 
-sof = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.sof')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.sof', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-sof$robot = 'sofia'
+lca.robot = lca$robot
+lca.uv = lca$uv
 
-pep = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.pep')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.pep', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-pep$robot = 'pepper'
+lca = lca %>% select(-robot,-uv)
 
-tap = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.tap')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.tap', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-tap$robot = 'tapia'
+lca.out = poLCA(cbind(choose=choose, 
+                   feel=feel, 
+                   hungry=hungry, 
+                   moral=moral, 
+                   pain=pain,
+                   scared=scared,
+                   think=think) ~ 1, 
+             maxiter=50000, 
+             nclass=3, 
+             nrep=50, 
+             data=lca)
 
-spot = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.spot')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.spot', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-spot$robot = 'spot'
+classes = as.data.frame(lca.out$posterior)
 
-fes = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.fes')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.fes', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-fes$robot = 'festo'
+km.out=kmeans(classes,2,nstart=100)
 
-atlas = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.atlas')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.atlas', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-atlas$robot = 'atlas'
+clusters = km %>%
+  count(robot,cluster)%>%
+  group_by(robot) %>%
+  mutate(freq = n / sum(n)) %>%
+  select(-n) %>%
+  spread(cluster, freq) %>%
+  ungroup()
 
-kb = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.kb')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.kb', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-kb$robot = 'kaspar_back'
+classes$robot = lca.robot
+classes$uv = lca.uv
 
-kf = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.kf')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.kf', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-kf$robot = 'kaspar_front'
+classes$cluster = km.out$cluster
+table(classes$robot,classes$cluster)[order(classes$cluster),]
 
-nao = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.nao')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.nao', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-nao$robot = 'nao'
+summary(lm(uv~cluster,data=classes))
 
-stan = UV2 %>%
-  filter(Age<=9) %>%
-  select(ends_with('.stan')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.stan', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-stan$robot = 'stan'
-
-ua.full = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
-ua = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
-
-ua$count = NULL
-ua.t = data.frame(t(ua))
-names(ua.t) = ua$robot 
-ua.t=ua.t[-nrow(ua.t),]
-
-ua = ua.t %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(round(.,2)))*100
-
-library(smacof)
-res <- unfolding(ua, type='interval')
-{plot(res, type = "p", pch = 25, col.columns = 3, ylim=c(-1,1),
-xlim=c(-1,1),
-label.conf.columns = list(label = TRUE, pos = 3, col = 3),
-col.rows = 8, label.conf.rows = list(label = TRUE, pos = 3, col = 8))
-abline(h=0,v=0)}
-
-```
-```{r unfolding_analysis_old}
-act = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.act')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.act', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-act$robot = 'actroid'
-
-sof = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.sof')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.sof', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-sof$robot = 'sofia'
-
-pep = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.pep')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.pep', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-pep$robot = 'pepper'
-
-tap = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.tap')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.tap', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-tap$robot = 'tapia'
-
-spot = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.spot')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.spot', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-spot$robot = 'spot'
-
-fes = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.fes')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.fes', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-fes$robot = 'festo'
-
-atlas = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.atlas')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.atlas', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-atlas$robot = 'atlas'
-
-kb = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.kb')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.kb', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-kb$robot = 'kaspar_back'
-
-kf = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.kf')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.kf', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-kf$robot = 'kaspar_front'
-
-nao = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.nao')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.nao', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-nao$robot = 'nao'
-
-stan = UV2 %>%
-  filter(Age>9) %>%
-  select(ends_with('.stan')) %>%
-  filter(Reduce(`+`, lapply(., is.na)) != ncol(.)) %>%
-  rename_all(funs(stringr::str_replace_all(., '.stan', ''))) %>%
-  mutate(R1 = ifelse(R1=='Yes',2,1)) %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(ifelse(.>1, 1, 0))) %>%
-  mutate(count = n()) %>%
-  summarize_all(mean,na.rm=T)
-  
-stan$robot = 'stan'
-
-ua.full = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
-ua = rbind(act,sof,pep,tap,spot,fes,atlas,kb,kf,nao,stan)
-ua$count = NULL
-ua.t = data.frame(t(ua))
-names(ua.t) = ua$robot 
-ua.t=ua.t[-nrow(ua.t),]
-
-ua = ua.t %>%
-  mutate_all(as.character) %>%
-  mutate_all(as.numeric) %>%
-  mutate_all(funs(round(.,2)))*100
-
-library(smacof)
-res <- unfolding(ua, type='interval')
-{plot(res, type = "p", pch = 25, col.columns = 3, ylim=c(-1,1),
-xlim=c(-1,1),
-label.conf.columns = list(label = TRUE, pos = 3, col = 3),
-col.rows = 8, label.conf.rows = list(label = TRUE, pos = 3, col = 8))
-abline(h=0,v=0)}
-
-```
-
-```{r more clustering analyses}
-#dendrograms
-#clustering
 ```
 
